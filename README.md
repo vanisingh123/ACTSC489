@@ -1,5 +1,5 @@
 # ACTSC489
-A GLM Severity Model Made in R
+A GLM Severity Model Made in R for the ACTSC489 Final Project. 
 
 ## Report Description
 This process discusses the methodology and results of building a loss cost model that will then be used for pricing auto 
