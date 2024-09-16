@@ -1,5 +1,5 @@
 # ACTSC489
-A GLM Severity Model Made in R for the ACTSC489 Final Project. 
+A GLM Severity Model Made in R for the ACTSC489 Final Project. This class was offered at the University of Waterloo in Winter 2023 and was titled "Predictive Modelling for P&C Insurance". 
 
 ## Report Description
 This process discusses the methodology and results of building a loss cost model that will then be used for pricing auto 
