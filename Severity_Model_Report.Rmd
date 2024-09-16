@@ -1,0 +1,1969 @@
+---
+output: word_document
+fontsize: 11pt 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+## plottingFunctions
+library(insuranceData) # Insurance data package
+library(ggplot2) # For nice plots
+library(grid) # For arranging plots
+library(gridExtra) # For arranging plots
+library(Hmisc) # For binning
+#data("dataCar") # Load data, uncomment to run
+
+#' @title Binning function
+#'
+#' @param response A numeric vector or data.frame. If it is a data frame, each column of response will be binned
+#' @param x A vector, the explanatory variable which you will like to bin
+#' @param weight A numeric vector, corresponding weights (if applicable), set to 1 or omit to have equal weights
+#' @param type A string, one of "equal" for equal width bins, "quantile" for quantiles, "minimum" for a minimum number of observations per bin
+#' The remaining parameters "type" and "g" can be ignored for categorical x; only set if dealing with numerical x
+#' @param g If type = "equal", set g to the desired number of equal cuts.
+#' If type = "quantile", set g to the desired number of quantiles.
+#' If type = "minimum", set g to the minimum desired number of observations per bin.
+#'
+#' @return
+#' @export
+#'
+#' @examples
+binnedData <- function(response, x, weight = rep(1, length(x)), type = "equal", g = 10){
+  # Check for packages
+  require(data.table)
+  require(Hmisc)
+  #browser()
+  # I need this function to compute the midpoint of an interval (e.g. midpoint of interval (3.0, 3.5] is 3.25) - please ignore - too complicated to explain
+  midpoints <- function(x, dp=2){
+    lower <- as.numeric(gsub(",.*","",gsub("\\(|\\[|\\)|\\]","", x)));
+    upper <- as.numeric(gsub(".*,","",gsub("\\(|\\[|\\)|\\]","", x)));
+    return(round(lower+(upper-lower)/2, dp));
+  }
+
+  if (is.numeric(x)){ # Check if numeric
+    # Compute bins using cut2 function from Hmisc package
+    binnedData = switch(type, equal = cut2(x, cuts = pretty(x, g), oneval = F),
+                        quantile = cut2(x, cuts = unique(wtd.quantile(x, weights = weight, probs = (1:(g-1)/g)))), #cut2(x, g = g, oneval = F),
+                        minimum = cut2(x, m = g))
+    # Put all data into data.table
+    binnedData = data.table("x" = binnedData, "weight" = weight)
+    binnedData = cbind(binnedData, response)
+
+    # Compute midpoints
+    #print(head(binnedData))
+    #binnedData[, mids := midpoints(x)]
+    #binnedData = binnedData[order(mids)]
+    #binnedData[, mids := NULL] # Removing it
+  } else{
+    # Put all data into data.table
+    binnedData = data.table("x" = x, "weight" = weight)
+    binnedData = cbind(binnedData, response)
+  }
+  # Aggregate by the binned x
+  setkeyv(binnedData, "x")
+  sdCols = setdiff(colnames(binnedData), c("x"))
+  binnedData = binnedData[, list("weight" = sum(weight)), by = "x"][binnedData[,lapply(.SD, weighted.mean, w = weight), by = "x", .SDcols = sdCols]]
+  binnedData[, i.weight := NULL]
+  return (binnedData[])
+}
+
+#' @title  Plotting function
+#' Similar initial parameters as binning function
+#' You can choose to provide the binned data or just let the plotting function compute it (it will just call the binnedData function)
+#' data = NULL if you want to let the plotting function compute the binned data.
+#' Otherwise, set binnedData to the output of the binnedData function and don't bother to set the parameters response, x and weight below.
+#' @param response
+#' @param x
+#' @param weight
+#' @param type
+#' @param g
+#' @param data
+#' @param xlab x-axis label
+#' @param ylab y-axis label
+#' @param wlab weight label
+#' @param title graph title
+#' @param plotIt
+#'
+#' @return
+#' @export
+#'
+#' @examples
+binnedPlot <- function(response = NULL, x = NULL, weight = rep(1, length(x)), type = "equal", g = 10, data = NULL, xlab = "Bins", ylab = "Response", wlab = "Weight", title = "Binned plot", plotIt = T, showWeights = T){
+  # Check for packages
+  require(data.table)
+  require(Hmisc)
+  require(ggplot2)
+  require(gridExtra)
+
+  if (is.null(data)){
+    data = binnedData(response, x, weight, type, g)
+  }
+  data[, index := .I]
+
+  p2 = ggplot(data) + # Base plot (blank)
+    geom_bar(color = "black", aes(x = index, y = weight), stat = "identity", width = 1) + # Bars for weight
+    labs(y = wlab, x = xlab) + # Add weight and x-axis label
+    scale_x_continuous(limits = c(0.5, max(data$index) + 0.5), breaks = data$index, labels = data$x) + # Just fixing the width of the plot and adding binned labels to plot
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+  data = data[, melt.data.table(data, id.vars = c("x", "weight", "index"))]
+  p1 = ggplot(data) + # Base plot (blank)
+    geom_line(size = 1, aes(x = index, y = value, color = variable)) + # Line plot of average response
+    geom_point(size = 2, aes(x = index, y = value, color = variable)) + # Add points so that it looks like the line plot connects the points
+    scale_x_continuous(limits = c(0.5, max(data$index) + 0.5)) + # Just fixing the width of the plot
+    labs(y = ylab, x = NULL) + ggtitle(title) + # Add response label and title
+    theme(axis.line.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), legend.position = "top") # Keep x-axis blank
+  # I took the following from http://www.exegetic.biz/blog/2015/05/r-recipe-aligning-axes-in-ggplot2/ to better align the plots
+  p1 = ggplot_gtable(ggplot_build(p1))
+  p2 = ggplot_gtable(ggplot_build(p2))
+  maxWidth = unit.pmax(p1$widths[2:3], p2$widths[2:3])
+  p1$widths[2:3] = maxWidth
+  p2$widths[2:3] = maxWidth
+  if(plotIt){
+    if (showWeights){
+      grid.arrange(p1, p2, ncol = 1)
+    } else{
+      grid.arrange(p1)
+    }
+  }
+  else arrangeGrob(p1, p2, ncol = 1)
+}
+
+#' @title Partial residual function
+#'
+#' @param mod An object of class glm, the output of glm(...)
+#' @param term A string denoting the name of the predictor for which you desire the partial residuals
+#'
+#' @return
+#' @export
+#'
+#' @examples
+partialResids <- function(mod, term){
+  partialResiduals = residuals(mod, "partial") # Get all partial residuals
+  whichCols = grep(term, colnames(partialResiduals)) # Finds column names which contain the defined 'term'
+  return(apply(partialResiduals[, whichCols, drop = F], 1, mean)) # Sum the partial residuals over all columns
+}
+
+
+########################
+# One-way plot example #
+########################
+# Uncomment to run
+
+#binnedData(response = dataCar$clm, x = dataCar$veh_body, weight = dataCar$exposure)
+#binnedPlot(response = dataCar$clm, x = dataCar$veh_body, weight = dataCar$exposure, xlab = "Vehicle body", ylab = "Claim Frequency", title = "Average claim frequency by vehicle body")
+#binnedData(response = dataCar$clm, x = dataCar$veh_age, weight = dataCar$exposure)
+#binnedPlot(response = dataCar$clm, x = dataCar$veh_age, weight = dataCar$exposure, xlab = "Vehicle age", type = "equal", g = 3, ylab = "Claim Frequency", title = "Average claim frequency by vehicle age")
+
+#############################
+# Construct frequency model #
+#############################
+# Uncomment to run
+
+# mod = glm(clm ~ gender + veh_age, offset = exposure, data = dataCar, family = poisson(link = "log"))
+# summary(mod)
+# Plot binned partial residuals
+# binnedPlot(data.frame("Partial Residuals" = partialResids(mod, "veh_age")), x = dataCar$veh_age, weight = dataCar$exposure, xlab = "Vehicle age", type = "equal", g = 3, ylab = "Claim Frequency", title = "Average claim frequency by vehicle age")
+# Plot binned partial residuals as well as observed
+# dataToPlot = data.frame("Partial Residuals" = partialResids(mod, "veh_age"),
+# "Response" = dataCar$clm)
+# binnedPlot(dataToPlot, x = dataCar$veh_age, weight = dataCar$exposure, xlab = "Vehicle age", type = "equal", g = 3, ylab = "Claim Frequency", title = "Average claim frequency by vehicle age")
+```
+
+```{r include=FALSE}
+##evalFunctions
+WeightedGini <- function(solution, weights = NULL, submission){
+  if (is.null(weights)){
+    weights = rep(1, length(solution))
+  }
+  df = data.frame(solution = solution, weights = weights, submission = submission)
+  df <- df[order(df$submission, decreasing = TRUE),]
+  df$random = cumsum((df$weights/sum(df$weights)))
+  totalPositive <- sum(df$solution * df$weights)
+  df$cumPosFound <- cumsum(df$solution * df$weights)
+  df$Lorentz <- df$cumPosFound / totalPositive
+  n <- nrow(df)
+  gini <- sum(df$Lorentz[-1]*df$random[-n]) - sum(df$Lorentz[-n]*df$random[-1])
+  return(gini)
+}
+
+NormalizedWeightedGini <- function(solution, weights = NULL, submission) {
+  WeightedGini(solution, weights, submission) / WeightedGini(solution, weights, solution)
+}
+
+mae <- function(solution, weights = NULL, submission){
+  if (is.null(weights)){
+    weights = rep(1, length(solution))
+  }
+  return (mean(weights*abs(solution - submission)))
+}
+
+rmse <- function(solution, weights = NULL, submission){
+  if (is.null(weights)){
+    weights = rep(1, length(solution))
+  }
+  return (sqrt(mean(weights*(solution - submission)^2)))
+}
+
+computeAllMeasures <- function(solution, weights = NULL, submission){
+  results = data.table("MAE" = mae(solution, weights, submission),
+                          "RMSE" = rmse(solution, weights, submission),
+                          "Gini" = NormalizedWeightedGini(solution, weights, submission))
+  return (results)
+}
+
+
+territorialSmoothing <- function(data, dataRegionVar, shapeFile, shapeFileRegionVar, glmMod, responseVar, weightVar = NULL, folds = NULL, smoothingFactor = 1, clusters = 5){
+    
+  setDT(data)
+  
+  #shapeFileFortified = fortify(shapeFile, region = shapeFileRegionVar)
+
+  shapeFileAdjacencies = gTouches(shapeFile, byid=TRUE)
+  diag(shapeFileAdjacencies) = T
+
+  data[, terr_resid := get(responseVar)/predict(glmMod, newdata = data, type = "response")]
+
+  prevGini = 0
+  currGini = 0
+
+  for (i in 1:length(folds)){
+    selTest = folds[[i]]
+    selTrain = as.numeric(unlist(folds[-i]))
+    
+    # Summarize residuals for in-sample folds by regionVar
+    if (is.null(weightVar)){
+      datSum = data[selTrain, list("meanResid" = mean(terr_resid), "weight" = length(terr_resid)), by = dataRegionVar]
+    } else{
+      datSum = data[, list("meanResid" = weighted.mean(terr_resid, get(weightVar)), "weight" = sum(get(weightVar))), by = dataRegionVar]
+    }
+
+    datSmooth = data.table("id" = shapeFile@data[, shapeFileRegionVar]) %>% unique
+    datSmooth = merge(datSmooth, datSum, by.x = "id", by.y = dataRegionVar, all.x = T, sort = F)
+    datSmooth[is.na(meanResid), meanResid := 0]
+    datSmooth[is.na(weight), weight := 0]
+
+    smoothResid = lapply(1:nrow(shapeFileAdjacencies), function(x){
+      currentAdjacencies = shapeFileAdjacencies[x,]
+      if (sum(currentAdjacencies) > 0){
+        adjacencyStats = datSmooth[currentAdjacencies == T, list("weight" = sum(weight),
+                                                                 "meanResid" = weighted.mean(meanResid, weight))]
+      } else{
+        adjacencyStats = data.table("weight" = 0, "meanResid" = 0)
+      }
+      currWeight = datSmooth[x, weight][[1]]
+      curr = datSmooth[x, meanResid][[1]]
+      w = currWeight/(currWeight + smoothingFactor)
+      if (is.na(w)){
+        w = 0
+      }
+      w*curr + (1 - w)*adjacencyStats$meanResid
+    })
+
+    datSmooth[, terr_smoothResid := unlist(smoothResid)]
+    set.seed(100)
+
+    kmeans_clustering = kmeans(datSmooth[, terr_smoothResid], centers = clusters)
+    datSmooth[, terr_cluster := round(kmeans_clustering$centers[kmeans_clustering$cluster], 2)]
+
+    data[, terr_smoothResid := NULL]
+    data[, terr_cluster := NULL]
+    data = merge(data, datSmooth[, .(id, terr_smoothResid, terr_cluster)], by.x = dataRegionVar, by.y = "id", all.x = T, sort = F)
+
+    prevMod = update(glmMod, data = data[selTrain,])
+    currMod = update(glmMod, formula = . ~ . + terr_cluster, data = data[selTrain,])
+    prevPred = predict(prevMod, newdata = data[selTest,])
+    currPred = predict(currMod, newdata = data[selTest,])
+    prevGini = prevGini + NormalizedWeightedGini(data[[responseVar]][selTest], rep(1, length(selTest)), prevPred)
+    currGini = currGini + NormalizedWeightedGini(data[[responseVar]][selTest], rep(1, length(selTest)), currPred)
+    #cat("\nFold #", i, ". The previous is: ", prevGini, ". The current is: ", currGini, ". The difference is: ", currGini - prevGini, ".\n")
+  }
+
+  prevGini = prevGini/length(folds)
+  currGini = currGini/length(folds)
+
+  cat("\nThe cross-validated increase in Gini with the addition of territorial clusters \nusing k = ", clusters, " and J = ", smoothingFactor, " is ", currGini - prevGini, "\n")
+
+  setDF(data)
+
+  return (currGini)
+}
+
+territorialSmoothingClusters <- function(data, dataRegionVar, shapeFile, shapeFileRegionVar, glmMod, responseVar, weightVar = NULL, smoothingFactor = 1, clusters = 5){
+  
+  setDT(data)
+  
+  #shapeFileFortified = fortify(shapeFile, region = shapeFileRegionVar)
+  
+  shapeFileAdjacencies = gTouches(shapeFile, byid=TRUE)
+  diag(shapeFileAdjacencies) = T
+  
+  data[, terr_resid := get(responseVar)/predict(glmMod, newdata = data, type = "response")]
+  
+  # Summarize residuals for in-sample folds by regionVar
+  if (is.null(weightVar)){
+    datSum = data[, list("meanResid" = mean(terr_resid), "weight" = length(terr_resid)), by = dataRegionVar]
+  } else{
+    datSum = data[, list("meanResid" = weighted.mean(terr_resid, get(weightVar)), "weight" = sum(get(weightVar))), by = dataRegionVar]
+  }
+  
+  datSmooth = data.table("id" = shapeFile@data[, shapeFileRegionVar])
+  datSmooth = merge(datSmooth, datSum, by.x = "id", by.y = dataRegionVar, all.x = T, sort = F)
+  datSmooth[is.na(meanResid), meanResid := 0]
+  datSmooth[is.na(weight), weight := 0]
+  
+  smoothResid = lapply(1:nrow(shapeFileAdjacencies), function(x){
+    currentAdjacencies = shapeFileAdjacencies[x,]
+    if (sum(currentAdjacencies) > 0){
+      adjacencyStats = datSmooth[currentAdjacencies == T, list("weight" = sum(weight),
+                                                               "meanResid" = weighted.mean(meanResid, weight))]
+    } else{
+      adjacencyStats = data.table("weight" = 0, "meanResid" = 0)
+    }
+    currWeight = datSmooth[x, weight][[1]]
+    curr = datSmooth[x, meanResid][[1]]
+    w = currWeight/(currWeight + smoothingFactor)
+    if (is.na(w)){
+      w = 0
+    }
+    w*curr + (1 - w)*adjacencyStats$meanResid
+  })
+    
+  datSmooth[, terr_smoothResid := unlist(smoothResid)]
+  set.seed(100)
+    
+  kmeans_clustering = kmeans(datSmooth[, terr_smoothResid], centers = clusters)
+  datSmooth[, terr_cluster := round(kmeans_clustering$centers[kmeans_clustering$cluster], 2)]
+  
+  data[, terr_smoothResid := NULL]
+  data[, terr_cluster := NULL]
+  
+  setDF(data)
+  
+  return (datSmooth[, .(id, terr_cluster)])
+}
+
+# Cross-validate a tweedie model
+cvFunction <- function(formula, dat, p = 1.5, numFolds = 5, seed = 123){
+  # Import required packages
+  suppressPackageStartupMessages(require(dplyr))
+  suppressPackageStartupMessages(require(modelr))
+  suppressPackageStartupMessages(require(purrr))
+  suppressPackageStartupMessages(require(broom))
+  suppressPackageStartupMessages(require(tidyr))
+  
+  datToTrain = dat %>% filter(partition == "Training") %>% setDT
+  
+  # Set seed before performing cross validation for reproducibility
+  set.seed(seed)
+  foldID = sample(1:numFolds, size = nrow(datToTrain), replace = T)
+  
+  # Perform cross validation procedure
+  # Create storage for the Gini coefficients, CV models and CV predictions
+  res = rep(0, numFolds)
+  models = vector(mode = "list", numFolds)
+  predictions = vector(mode = "list", numFolds)
+  
+  # Loop over folds, fit a model, predict and compute Gini 
+  for (i in 1:numFolds){
+    models[[i]] = glm(formula, family=tweedie(var.power = p, link.power = 0), 
+                      data = datToTrain[foldID != i], weights = exposure)
+    predictions[[i]] = predict(models[[i]], newdata = datToTrain[foldID == i], type = "response")
+    res[i] = NormalizedWeightedGini(datToTrain[foldID == i, loss_cost], datToTrain[foldID == i, exposure], predictions[[i]])
+  }
+  
+  # Compute summary statistics for parameter estimates
+  paramStats = lapply(models, broom::tidy) %>% # Compute statistics 
+    bind_rows() %>%
+    group_by(term) %>% # Group by term in model
+    summarise(Minimum = min(estimate), # Minimum 
+              Maximum = max(estimate), # Maximum
+              Mean = mean(estimate), # Mean
+              Standard.Error = sd(estimate)/sqrt(numFolds) # Standard error
+    ) %>%
+    as.data.table()
+  
+  # Obtain cross-validated predictions for each fold
+  datWithPredictions = datToTrain[, .(loss_cost, exposure, .id = foldID, .fitted = numeric(.N))]
+  for (i in 1:numFolds){
+    datWithPredictions[.id == i, .fitted := predictions[[i]]]
+  }
+
+  # Compute the Gini coefficient for each fold (.id)
+  # Then compute the average (cross-validated) Gini as well as a standard error for the Gini
+  cvStats = datWithPredictions %>% group_by(.id) %>% 
+    summarise(Gini = NormalizedWeightedGini(loss_cost, exposure, .fitted)) %>%
+    summarise(CVGini = mean(Gini), seGini = sd(Gini)/sqrt(numFolds)) %>%
+    as.data.table()
+  
+  return(list("Parameter statistics" = paramStats,
+              "Cross-validated statistics" = cvStats))
+}
+```
+
+```{r include=FALSE}
+## cvCode
+require(statmod)
+require(insuranceData)
+require(data.table)
+#source("plottingFunctions.R")
+#source("eval_measures.R")
+
+
+# Import data
+data("dataCar")
+setDT(dataCar)
+
+# Define loss cost
+dataCar[, loss_cost := claimcst0/exposure]
+
+# Intercept only model
+dat = dataCar
+interceptOnlyMod = glm(loss_cost ~ 1, family=tweedie(var.power = 1.5, link.power = 0), data = dat,
+                       weights = exposure)
+# Verifying that the weighted observed mean equals the weighted predicted mean for the response
+dataCar[, weighted.mean(loss_cost, exposure)]
+
+weighted.mean(predict(interceptOnlyMod, type = "response"), dataCar$exposure)
+
+# Summary of loss cost
+hist(dataCar$loss_cost)
+summary(dataCar$loss_cost)
+mean(dataCar$loss_cost == 0)
+
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(dat), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(loss_cost ~ veh_age, family = tweedie(var.power = 1.5, link.power = 0), data = dat[foldID != i], weights = exposure)
+  predictions[[i]] = predict(models[[i]], newdata = dat[foldID == i], type = "response")
+  res[i] = NormalizedWeightedGini(dat[foldID == i, loss_cost], weights = dat[foldID == i, exposure], submission = predictions[[i]])
+}
+
+# Calling this model 'modelFitX' - Can add another predictor, and re-run the above. Can then compare CV Gini's.
+modelFitX = mean(res)
+modelFitX_fit = glm(loss_cost ~ veh_age, family=tweedie(var.power = 1.5, link.power = 0), data = dat,
+                    weights = exposure)
+
+dat[, areaF := ifelse(area == "F", 1, 0)]
+
+for (i in 1:5){
+  models[[i]] = glm(loss_cost ~ veh_age + areaF, family = tweedie(var.power = 1.5, link.power = 0), data = dat[foldID != i], weights = exposure)
+  predictions[[i]] = predict(models[[i]], newdata = dat[foldID == i], type = "response")
+  res[i] = NormalizedWeightedGini(dat[foldID == i, loss_cost], weights = dat[foldID == i, exposure], submission = predictions[[i]])
+}
+
+mean(res)
+
+# Here's how to add back the predictions to the dataset
+for (i in 1:5){
+  dat[foldID == i, prediction := predictions[[i]]]
+}
+
+# A CV Lift Chart
+binnedPlot(response = dat[, .(loss_cost, prediction)], x = dat$prediction, weight = dat$exposure, type = "quantile")
+```
+
+# Appendix C: Freq x Sev Model Building
+
+### Appendix C.1: Severity Variate Creation and Capping
+
+```{r echo=FALSE}
+library(tidyverse)
+library(statmod)
+library(effects)
+require(statmod)
+require(insuranceData)
+require(data.table)
+require(units)
+#loading the dataset:
+collDatasetTrain <- read.csv("~/Documents/Winter 2023/ACTSC 489/collDatasetTrain.csv")
+coll_dataset<-collDatasetTrain
+coll_dataset_Test<-read.csv("~/Documents/Winter 2023/ACTSC 489/collDatasetTest.csv")
+
+#creating the partition dataset for claims:
+set.seed(12345)
+rand_sample2 = runif(nrow(coll_dataset), 0, 1)
+coll_dataset$partition = ifelse(rand_sample2 < 0.7, "Training", "Holdout")
+
+#Making AY_factor
+coll_dataset = coll_dataset %>%
+  mutate(AY_factor = factor(Accident_year, levels=c("2019", "2020", "2021")))
+
+coll_dataset_Test = coll_dataset_Test %>%
+  mutate(Accident_year=2021)
+
+coll_dataset_Test = coll_dataset_Test %>%
+  mutate(AY_factor = factor(Accident_year, levels=c("2019", "2020", "2021")))
+
+coll_dataset$severity = coll_dataset$Collision_incurred_amount/
+  coll_dataset$Collision_claim_count
+
+#removing non-claim_records
+coll_dataset_claims = filter(coll_dataset, partition=="Training")
+coll_dataset_claims = coll_dataset_claims[coll_dataset_claims$Collision_incurred_amount != 0,]
+coll_dataset_claims$partition="Training" 
+
+#creating the severity variate
+coll_dataset_claims$severity = coll_dataset_claims$Collision_incurred_amount/
+  coll_dataset_claims$Collision_claim_count
+
+#severity capping:
+summary(coll_dataset_claims$severity)
+quantile(coll_dataset_claims$severity, 
+         c(0.8,0.85,0.90,0.95,0.96,0.97,0.98,0.99,0.995,1)) 
+
+sev = coll_dataset_claims$severity
+qs = c(0.9, 0.95, 0.97, 0.98, 0.985, 0.99, 0.995, 0.998, 0.999, 1)
+qt = quantile(sev, qs)
+num_claims_above = sapply(qt,function(q){sum(sev>q)})
+```
+
+```{r}
+plotdat = data.frame(qs, qt, num_claims_above)
+data.frame(quantile = round(qt), num_claims_above)
+
+#visualize the above
+ggplot(plotdat, aes(x = qs, y = qt)) +
+  geom_line() +
+  geom_text(aes(label=qs), hjust=0, vjust=0) +
+  ggtitle("Loss Size at Various Quantiles") +
+  xlab("Quantile") +
+  ylab("Severity")
+
+CV_by_quantile = sapply(qt,function(q){
+  sd(pmin(sev, q))/mean(pmin(sev, q))})
+
+plotdat2 = data.frame(qs, qt, CV_by_quantile)
+data.frame(quantile = round(qt), round(CV_by_quantile,3))
+
+#visualize the above
+ggplot(plotdat2, aes(x = qs, y = CV_by_quantile)) +
+  geom_line() +
+  geom_text(aes(label=qs), hjust=0, vjust=0) +
+  ggtitle("CV at Various Quantiles") +
+  xlab("Quantile") +
+  ylab("CV")
+
+qs = c(0.9, 0.95, 0.97, 0.98, 0.985, 0.99, 0.995, 0.998, 0.999)
+qt = quantile(sev, qs)
+
+LER_by_quantile = sapply(qt,function(q){
+  1 - sum(pmin(sev, q))/sum(sev)})
+
+plotdat4 = data.frame(qs, qt, LER_by_quantile)
+data.frame(quantile = round(qt), round(LER_by_quantile,3))
+
+#visualize the above
+ggplot(plotdat4, aes(x = qs, y = LER_by_quantile)) +
+  geom_line() +
+  geom_text(aes(label=qs), hjust=0, vjust=0) +
+  ggtitle("LER at Various Quantiles") +
+  xlab("Quantile") +
+  ylab("LER")
+
+qs <- c(0.9, 0.95, 0.97, 0.98, 0.985, 0.99, 0.995, 0.998, 0.999, 1)
+qt <- quantile(coll_dataset_claims$severity, qs)
+
+# MEL Function
+MEL_by_quantile <- sapply(qt,function(q){
+  mean(coll_dataset_claims[which(coll_dataset_claims$severity > q), ]$severity) - q})
+
+plotdatMEL <- data.frame(qs, qt, MEL_by_quantile)
+data.frame(quantile = round(qt), round(MEL_by_quantile,3))
+
+# Plotting
+ggplot(plotdatMEL, aes(x = qs, y = MEL_by_quantile)) +
+  geom_line() +
+  geom_text(aes(label=qs), hjust=0, vjust=0) +
+  ggtitle("MEL at Various Quantiles") +
+  xlab("Quantile") +
+  ylab("Mean Excess Loss")
+
+#cap at 59319 for now. 
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(severity = ifelse(severity<59319, severity, 59319))
+```
+
+### Appendix C.2: Creating the Base Model
+
+```{r echo=FALSE}
+base_glm1<-glm(severity ~ AY_factor, 
+              family=Gamma(link="log"), 
+              data = coll_dataset_claims, 
+              weights=Collision_claim_count,
+              subset=(partition=="Training"), 
+              na.action="na.pass",
+              x = TRUE)
+summary(base_glm1)
+coll_dataset$sevPrediction <- predict(base_glm1,
+                                      newdata = coll_dataset,
+                                      type = "response")
+```
+
+#### Appendix C.2.1: CV Testing for Base Model
+
+```{r echo=FALSE}
+#CV for base_glm1
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_base<-mean(res)
+mean_gini_base
+```
+
+### Appendix C.3: Adding new_policy
+
+```{r echo=FALSE}
+#adding new_policy
+coll_dataset_claims= coll_dataset_claims %>%
+  mutate(new_policy= case_when(
+    Inception_date == Term_effective_date ~ "Y",
+    TRUE ~ "N"
+  ))
+
+coll_dataset= coll_dataset %>%
+  mutate(new_policy= case_when(
+    Inception_date == Term_effective_date ~ "Y",
+    TRUE ~ "N"
+  ))
+
+coll_dataset_Test= coll_dataset_Test %>%
+  mutate(new_policy= case_when(
+    Inception_date == Term_effective_date ~ "Y",
+    TRUE ~ "N"
+  ))
+```
+
+#### Appendix C.3.1: One-way analysis for new_policy
+
+```{r echo=FALSE}
+#one-way Analysis
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(data.frame(dataToPlot$severity), 
+           x = factor(dataToPlot$new_policy), 
+           weight = dataToPlot$Collision_claim_count, 
+           xlab = "New Policy", 
+           ylab = "Claim Severity", 
+           title = "Average claim Severity by New Policy?")
+```
+
+#### Appendix C.3.2: Significance Test for new_policy
+
+```{r echo=FALSE}
+glm2<-glm(severity ~ AY_factor + new_policy,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count,
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm2) #all significant
+```
+
+#### Appendix C.3.3: Time Consistency for new_policy
+
+```{r echo=FALSE}
+#Time consistency
+glm2_TC<-glm(severity ~ AY_factor*new_policy,
+             family=Gamma(link="log"), 
+             data = coll_dataset_claims, 
+             weights=Collision_claim_count, 
+             subset=(partition=="Training"), 
+             na.action="na.pass",
+             x = TRUE)
+plot(predictorEffects(glm2_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.3.4: F-Test for new_policy
+
+```{r echo=FALSE}
+#F-test
+anova(glm2, base_glm1, test="F") #passed
+```
+
+#### Appendix C.3.5: Parsimony for new_policy
+
+```{r echo=FALSE}
+#Parismony 
+print("AIC")
+c(AIC(base_glm1), BIC(base_glm1))
+print("BIC")
+c(AIC(glm2), BIC(glm2)) #slight decrease in both
+```
+
+#### Appendix C.3.6: CV for new_policy
+
+```{r echo=FALSE}
+#CV for glm2
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + new_policy,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm2<-mean(res)
+mean_gini_glm2
+```
+
+### Appendix C.4: Adding vehicle_age
+
+```{r echo=FALSE}
+#adding vehicle_age
+coll_dataset_claims= coll_dataset_claims %>%
+  mutate(vehicle_age=as.numeric(difftime(as.Date(Term_effective_date),as.Date(ISOdate(Vehicle_model_year, 1, 1)),
+                                         units = "weeks"))/52.25)
+summary(coll_dataset_claims$vehicle_age)
+
+coll_dataset= coll_dataset %>%
+  mutate(vehicle_age=as.numeric(difftime(as.Date(Term_effective_date),as.Date(ISOdate(Vehicle_model_year, 1, 1)),
+                                         units = "weeks"))/52.25)
+
+coll_dataset_Test= coll_dataset_Test %>%
+  mutate(vehicle_age=as.numeric(difftime(as.Date(Term_effective_date),as.Date(ISOdate(Vehicle_model_year, 1, 1)),
+                                         units = "weeks"))/52.25)
+#capping
+quantile(coll_dataset_claims$vehicle_age, c(0.8,0.85,0.9,0.95,0.96,0.97,0.98,0.99,1)) ## 99% below 23 years
+
+coll_dataset = coll_dataset %>%
+  mutate(vehicle_age = ifelse(vehicle_age<23, vehicle_age, 23))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(vehicle_age = ifelse(vehicle_age<23, vehicle_age, 23))
+
+coll_dataset_Test = coll_dataset_Test %>%
+  mutate(vehicle_age = ifelse(vehicle_age<23, vehicle_age, 23))
+```
+
+#### Appendix C.4.1: One-way Analysis for vehicle_age
+
+```{r echo=FALSE}
+#one-way Analysis
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$vehicle_age, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 6, 
+           xlab = "Vehicle Age", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Vehicle Age")
+```
+
+#### Appendix C.4.2: Significance for vehicle_age
+
+```{r echo=FALSE}
+glm3<-glm(severity ~ AY_factor + new_policy + vehicle_age,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count,
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+#new_policy is not significant
+
+# remove it:
+glm3<-glm(severity ~ AY_factor+ vehicle_age,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count,
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm3) 
+```
+
+#### Appendix C.4.3: Time Consistency for vehicle_age
+
+```{r echo=FALSE}
+#Time consistency
+glm3_TC<-glm(severity ~ AY_factor*vehicle_age,
+             family=Gamma(link="log"), 
+             data = coll_dataset_claims, 
+             weights=Collision_claim_count, 
+             subset=(partition=="Training"), 
+             na.action="na.pass",
+             x = TRUE)
+plot(predictorEffects(glm3_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.4.4: Parsimony for vehicle_age
+
+```{r echo=FALSE}
+#Parsimony
+print("AIC")
+c(AIC(glm2), BIC(glm2))
+print("BIC")
+c(AIC(glm3), BIC(glm3)) #decrease in both
+```
+
+#### Appendix C.4.5: CV for vehicle_age
+
+```{r echo=FALSE}
+#CV for glm3
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor +vehicle_age,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm3<-mean(res)
+mean_gini_glm3
+```
+
+### Appendix C.5: Adding agecat
+
+```{r echo=FALSE}
+#adding age
+coll_dataset_claims= coll_dataset_claims %>%
+  mutate(age=as.numeric(difftime(as.Date("2021-12-31"),as.Date(Insured_birth_date), units = "weeks"))/52.25)
+
+coll_dataset= coll_dataset %>%
+  mutate(age=as.numeric(difftime(as.Date("2021-12-31"),as.Date(Insured_birth_date), units = "weeks"))/52.25)
+
+coll_dataset_Test= coll_dataset_Test %>%
+  mutate(age=as.numeric(difftime(as.Date("2021-12-31"),as.Date(Insured_birth_date), units = "weeks"))/52.25)
+
+##replace NA with mean
+coll_dataset_claims= coll_dataset_claims %>%
+  mutate(age=ifelse(is.na(age), 48.93, age))
+
+coll_dataset= coll_dataset %>%
+  mutate(age=ifelse(is.na(age), 48.93, age))
+
+coll_dataset_Test= coll_dataset_Test %>%
+  mutate(age=ifelse(is.na(age), 48.93, age))
+
+#let's try grouping
+coll_dataset_claims= coll_dataset_claims %>%
+  mutate(agecat=ifelse(age<25, 1, ifelse(age<36, 2, ifelse(age<51, 3, ifelse(age<66, 4, ifelse(age<81, 5, 6))))))
+
+coll_dataset= coll_dataset%>%
+  mutate(agecat=ifelse(age<25, 1, ifelse(age<36, 2, ifelse(age<51, 3, ifelse(age<66, 4, ifelse(age<81, 5, 6))))))
+
+coll_dataset_Test= coll_dataset_Test%>%
+  mutate(agecat=ifelse(age<25, 1, ifelse(age<36, 2, ifelse(age<51, 3, ifelse(age<66, 4, ifelse(age<81, 5, 6))))))
+```
+
+#### Appendix C.5.1: One-way Analysis for agecat
+
+```{r echo=FALSE}
+#one-way analysis
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$agecat, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 6, 
+           xlab = "Agecat", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by AgeCat") #nice decreasing trend
+```
+
+#### Appendix C.5.2: Significance Test for agecat
+
+```{r echo=FALSE}
+glm4<-glm(severity ~ AY_factor + vehicle_age +agecat,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count, 
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm4) 
+```
+
+#### Appendix C.5.3: Time Consistency for agecat
+
+```{r echo=FALSE}
+# Time Consistency
+glm4_TC<-glm(severity ~ AY_factor*agecat,
+             family=Gamma(link="log"), 
+             data = coll_dataset_claims, 
+             weights=Collision_claim_count, 
+             subset=(partition=="Training"), 
+             na.action="na.pass",
+             x = TRUE)
+plot(predictorEffects(glm4_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.5.4: F-Test for agecat
+
+```{r echo=FALSE}
+anova(glm3,glm4, test="F") #passed
+```
+
+#### Appendix C.5.5: Parsimony for agecat
+
+```{r echo=FALSE}
+print("AIC")
+c(AIC(glm3), BIC(glm3))
+print("BIC")
+c(AIC(glm4), BIC(glm4)) #slight decrease in both
+```
+
+#### Appendix C.5.6: CV for agecat
+
+```{r echo=FALSE}
+#CV for glm4
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + vehicle_age +agecat,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm4<-mean(res)
+mean_gini_glm4
+```
+
+### Appendix C.6: Adding Liab_driving_record_Ind
+
+```{r echo=FALSE}
+#as factor
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Liab_driving_record_f = as.factor(Liab_driving_record))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Liab_driving_record_f= ifelse(is.na(Liab_driving_record_f),"NA", Liab_driving_record_f))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Liab_driving_record_f = as.factor(Liab_driving_record))
+
+coll_dataset = coll_dataset %>%
+  mutate(Liab_driving_record_f = as.factor(Liab_driving_record))
+
+coll_dataset= coll_dataset %>%
+  mutate(Liab_driving_record_f= ifelse(is.na(Liab_driving_record_f),"NA", Liab_driving_record_f))
+
+coll_dataset= coll_dataset%>%
+  mutate(Liab_driving_record_f = as.factor(Liab_driving_record))
+
+coll_dataset_Test = coll_dataset_Test %>%
+  mutate(Liab_driving_record_f = as.factor(Liab_driving_record))
+
+coll_dataset_Test= coll_dataset_Test %>%
+  mutate(Liab_driving_record_f= ifelse(is.na(Liab_driving_record_f),"NA", Liab_driving_record_f))
+
+coll_dataset_Test= coll_dataset_Test%>%
+  mutate(Liab_driving_record_f = as.factor(Liab_driving_record))
+
+#Indicator variate
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Liab_driving_record_Ind= ifelse(Liab_driving_record_f == 6, "group6", "not6"))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Liab_driving_record_Ind= ifelse(is.na(Liab_driving_record_Ind), "not6", Liab_driving_record_Ind))
+
+coll_dataset= coll_dataset %>%
+  mutate(Liab_driving_record_Ind= ifelse(Liab_driving_record_f == 6, "group6", "not6"))
+
+coll_dataset = coll_dataset %>%
+  mutate(Liab_driving_record_Ind= ifelse(is.na(Liab_driving_record_Ind), "not6", Liab_driving_record_Ind))
+
+coll_dataset_Test= coll_dataset_Test %>%
+  mutate(Liab_driving_record_Ind= ifelse(Liab_driving_record_f == 6, "group6", "not6"))
+
+coll_dataset_Test = coll_dataset_Test %>%
+  mutate(Liab_driving_record_Ind= ifelse(is.na(Liab_driving_record_Ind), "not6", Liab_driving_record_Ind))
+```
+
+#### Appendix C.6.1: One-way Analysis for Liab_driving_record_Ind
+
+```{r echo=FALSE}
+#one-way analysis
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$Liab_driving_record_Ind, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 6, 
+           xlab = "Liab_driving_record_Ind", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Driving Record Ind") #makes sense
+```
+
+#### Appendix C.6.2: Significance Test for Liab_driving_record_Ind
+
+```{r echo=FALSE}
+#adding to model
+glm5<-glm(severity ~ AY_factor + vehicle_age +agecat + Liab_driving_record_Ind,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count,
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm5) #all significant
+```
+
+#### Appendix C.6.3: Time Consistency for Liab_driving_record_Ind
+
+```{r echo=FALSE}
+#Time Consistency
+glm5_TC<-glm(formula = severity ~ AY_factor * Liab_driving_record_Ind, 
+             family = Gamma(link = "log"), data = coll_dataset_claims, 
+             weights = Collision_claim_count, subset = (partition == "Training"), 
+             na.action = "na.pass", x = TRUE)
+plot(predictorEffects(glm5_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.6.4: F-Test for Liab_driving_record_Ind
+
+```{r echo=FALSE}
+#F-Test
+anova(glm4,glm5,test="F") #passed
+```
+
+#### Appendix C.6.5: Parsimony for Liab_driving_record_Ind
+
+```{r echo=FALSE}
+#Parsimony
+print("AIC")
+c(AIC(glm4), BIC(glm4))
+print("BIC")
+c(AIC(glm5), BIC(glm5)) #slight decrease in both
+```
+
+#### Appendix C.6.6: CV for Liab_driving_record_Ind
+
+```{r echo=FALSE}
+#CV for glm5
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + vehicle_age +agecat + 
+                      Liab_driving_record_Ind,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm5<-mean(res)
+mean_gini_glm5
+```
+
+### Appendix C.7: Adding Marital_status_Ind
+
+```{r echo=FALSE}
+#Adding marital_status
+coll_dataset_claims = coll_dataset_claims%>%
+  mutate(Marital_status_Ind = ifelse(Marital_status == "Common Law", "Married", 
+                                     ifelse(Marital_status=="Same sex", "Married", 
+                                            ifelse(Marital_status=="Married", "Married", "Single"))))
+
+coll_dataset = coll_dataset%>%
+  mutate(Marital_status_Ind = ifelse(Marital_status == "Common Law", "Married", 
+                                     ifelse(Marital_status=="Same sex", "Married", 
+                                            ifelse(Marital_status=="Married", "Married", "Single"))))
+
+coll_dataset_Test = coll_dataset_Test%>%
+  mutate(Marital_status_Ind = ifelse(Marital_status == "Common Law", "Married", 
+                                     ifelse(Marital_status=="Same sex", "Married", 
+                                            ifelse(Marital_status=="Married", "Married", "Single"))))
+```
+
+#### Appendix C.7.1: One-way Analysis for Marital_status_Ind
+
+```{r echo=FALSE}
+#one-way analysis
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$Marital_status_Ind, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 6, 
+           xlab = "Marital Status", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Marital Status") #makes sense
+```
+
+#### Appendix C.7.2: Significance Test for Analysis for Marital_status_Ind
+
+```{r echo=FALSE}
+#adding marital status to model
+glm6<-glm(severity ~ AY_factor + vehicle_age +agecat+ 
+            Liab_driving_record_Ind + Marital_status_Ind,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count, 
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm6) #borderline significant, let's see...
+```
+
+#### Appendix C.7.3: Time Consistency for Marital_status_Ind
+
+```{r echo=FALSE}
+#Time consistency
+glm6_TC<-glm(severity ~ AY_factor*Marital_status_Ind,
+             family=Gamma(link="log"), 
+             data = coll_dataset_claims, 
+             weights=Collision_claim_count,
+             subset=(partition=="Training"), 
+             na.action="na.pass",
+             x = TRUE)
+plot(predictorEffects(glm6_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.7.4: F-Test for Marital_status_Ind
+
+```{r echo=FALSE}
+#F-Test
+anova(glm5,glm6, test="F") #passed
+```
+
+#### Appendix C.7.5: Parsimony for Marital_status_Ind
+
+```{r echo=FALSE}
+#Parsimony
+print("AIC")
+c(AIC(glm5), BIC(glm5))
+print("BIC")
+c(AIC(glm6), BIC(glm6)) #BIC slightly increases
+```
+
+#### Appendix C.7.6: CV for Marital_status_Ind
+
+```{r echo=FALSE}
+#CV for glm6
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + vehicle_age +agecat + 
+                      Liab_driving_record_Ind + Marital_status_Ind,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm6<-mean(res)
+mean_gini_glm6
+```
+
+### Appendix C.8: Adding Num_at_fault_claims_past_1\_yr_Ind
+
+```{r echo=FALSE}
+#adding Num_at_fault
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Num_at_fault_claims_past_1_yr_Ind= ifelse(Num_at_fault_claims_past_1_yr!=0, 1, 0))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Num_at_fault_claims_past_1_yr_Ind= as.factor(Num_at_fault_claims_past_1_yr_Ind))
+
+coll_dataset= coll_dataset %>%
+  mutate(Num_at_fault_claims_past_1_yr_Ind= ifelse(Num_at_fault_claims_past_1_yr!=0, 1, 0))
+
+coll_dataset = coll_dataset %>%
+  mutate(Num_at_fault_claims_past_1_yr_Ind= as.factor(Num_at_fault_claims_past_1_yr_Ind))
+
+coll_dataset_Test= coll_dataset_Test %>%
+  mutate(Num_at_fault_claims_past_1_yr_Ind= ifelse(Num_at_fault_claims_past_1_yr!=0, 1, 0))
+
+coll_dataset_Test = coll_dataset_Test %>%
+  mutate(Num_at_fault_claims_past_1_yr_Ind= as.factor(Num_at_fault_claims_past_1_yr_Ind))
+```
+
+#### Appendix C.8.1: One-way Analysis for Num_at_fault_claims_past_1\_yr_Ind
+
+```{r echo=FALSE}
+#one-way analysis
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$Num_at_fault_claims_past_1_yr_Ind, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 6, 
+           xlab = "Num_at_fault_claims_past_1_yr_Ind", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Num_at_fault_claims_past_1_yr_Ind") #makes sense
+```
+
+#### Appendix C.8.2: Significance Test for Num_at_fault_claims_past_1\_yr_Ind
+
+```{r echo=FALSE}
+glm7<-glm(severity ~ AY_factor + vehicle_age +agecat + 
+            + Marital_status_Ind + Liab_driving_record_Ind +
+            Num_at_fault_claims_past_1_yr_Ind,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count, 
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm7) #all signifincant
+```
+
+#### Appendix C.8.3: Time Consistency for Num_at_fault_claims_past_1\_yr_Ind
+
+```{r echo=FALSE}
+glm7_TC<-glm(severity ~ AY_factor*Num_at_fault_claims_past_1_yr_Ind,
+             family=Gamma(link="log"), 
+             data = coll_dataset_claims, 
+             weights=Collision_claim_count, 
+             subset=(partition=="Training"), 
+             na.action="na.pass",
+             x = TRUE)
+plot(predictorEffects(glm7_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.8.4: F-Test for Num_at_fault_claims_past_1\_yr_Ind
+
+```{r}
+#F-Test
+anova(glm6,glm7,test="F") #passed
+```
+
+#### Appendix C.8.5: Parismony for Num_at_fault_claims_past_1\_yr_Ind
+
+```{r echo=FALSE}
+#Parsimony
+print("AIC")
+c(AIC(glm6), BIC(glm6)) 
+print("BIC")
+c(AIC(glm7), BIC(glm7)) #slight increase in BIC
+```
+
+#### Appendix C.8.6: CV for Num_at_fault_claims_past_1\_yr_Ind
+
+```{r echo=FALSE}
+#CV for glm7
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + vehicle_age +agecat + 
+                      Liab_driving_record_Ind + Marital_status_Ind +
+                      Num_at_fault_claims_past_1_yr_Ind,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm7<-mean(res)
+mean_gini_glm7
+```
+
+### Appendix C.9: Not Adding Num_yrs_since_fault
+
+```{r echo=FALSE}
+#Num_yrs_since_last_at_fault_claim
+#turn into indicator
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Num_yrs_since_fault=ifelse(Num_yrs_since_last_at_fault_claim<=5,"last_5","over_5"))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Num_yrs_since_fault= ifelse(is.na(Num_yrs_since_fault), "never", Num_yrs_since_fault))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Num_yrs_since_fault= factor(Num_yrs_since_fault, levels=c("never", "over_5", "last_5")))
+```
+
+#### Appendix C.9.1: One-way Analysis for Num_yrs_since_fault
+
+```{r echo=FALSE}
+#one-way analysis
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(data.frame(dataToPlot$severity), 
+           x = factor(dataToPlot$Num_yrs_since_fault), 
+           weight = dataToPlot$Collision_claim_count, 
+           xlab = "Num_yrs_since_fault", 
+           ylab = "Claim Severity", 
+           title = "Average claim Severity by Num_yrs_since_fault")
+```
+
+#### Appendix C.9.2: Significance Test for Num_yrs_since_fault
+
+```{r echo=FALSE}
+#Add to model
+glm8<-glm(severity ~ AY_factor + vehicle_age +agecat + 
+            Liab_driving_record_Ind + Marital_status_Ind +
+            Num_at_fault_claims_past_1_yr_Ind + Num_yrs_since_fault,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count, 
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm8) #not significant
+```
+
+### Appendix C.10: Not Adding Num_minor Convictions
+
+#### Appendix C.10.1: One-way Analysis for Num_minor_Convictions
+
+```{r echo=FALSE}
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$Num_minor_convictions, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 12, 
+           xlab = "Number of Minor Convictions", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Number of Minor Convictions")
+```
+
+### Appendix C.11: Correlation Check
+
+```{r echo=FALSE}
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Vehicle_retail_price= ifelse(is.na(Vehicle_retail_price),34618, Vehicle_retail_price))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Vehicle_horsepower= ifelse(is.na(Vehicle_horsepower),213.1, Vehicle_horsepower))
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Vehicle_wheelbase= ifelse(is.na(Vehicle_wheelbase),2944, Vehicle_wheelbase))
+
+coll_dataset = coll_dataset%>%
+  mutate(Vehicle_retail_price= ifelse(is.na(Vehicle_retail_price),34618, Vehicle_retail_price))
+
+coll_dataset = coll_dataset %>%
+  mutate(Vehicle_horsepower= ifelse(is.na(Vehicle_horsepower),213.1, Vehicle_horsepower))
+
+coll_dataset = coll_dataset %>%
+  mutate(Vehicle_wheelbase= ifelse(is.na(Vehicle_wheelbase),2944, Vehicle_wheelbase))
+
+coll_dataset_Test = coll_dataset_Test %>%
+  mutate(Vehicle_retail_price= ifelse(is.na(Vehicle_retail_price),34618, Vehicle_retail_price))
+
+coll_dataset_claims %>% 
+  filter(partition == "Training") %>%
+  select(Vehicle_horsepower, Vehicle_retail_price, Vehicle_wheelbase) %>%
+  cor(method = "spearman")
+```
+
+### Appendix C.12: Vehicle_retail_price Model
+
+```{r echo=FALSE}
+quantile(coll_dataset_claims$Vehicle_retail_price, c(0.8,0.85,0.90,0.95,0.96,0.97,0.98,0.985,0.99,0.995,1)) #cap at 96469.37
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Vehicle_retail_price=ifelse(Vehicle_retail_price>96469.37, 96469.37, Vehicle_retail_price))
+
+coll_dataset = coll_dataset %>%
+  mutate(Vehicle_retail_price=ifelse(Vehicle_retail_price>96469.37, 96469.37, Vehicle_retail_price))
+```
+
+#### Appendix C.12.1: One-way Analysis for Vehicle_retail_price
+
+```{r echo=FALSE}
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$Vehicle_retail_price, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 8, 
+           xlab = "Retail Price", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Retail Price") #makes sense
+```
+
+#### Appendix C.12.2: Significance Test for Vehicle_retail_price
+
+```{r echo=FALSE}
+#Add to model
+glm9<-glm(severity ~ AY_factor + vehicle_age +agecat + 
+            Liab_driving_record_Ind + Marital_status_Ind +
+            Num_at_fault_claims_past_1_yr_Ind + Vehicle_retail_price,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count, 
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm9) #all significant
+```
+
+#### Appendix C.12.3: Time Consistency for Vehicle_retail_price
+
+```{r echo=FALSE}
+#Time consistency
+glm9_TC<-glm(severity ~ AY_factor*Vehicle_retail_price,
+             family=Gamma(link="log"), 
+             data = coll_dataset_claims, 
+             weights=Collision_claim_count,
+             subset=(partition=="Training"), 
+             na.action="na.pass",
+             x = TRUE)
+plot(predictorEffects(glm9_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.12.4: F-Test for Vehicle_retail_price
+
+```{r echo=FALSE}
+#F-Test
+anova(glm7,glm9,test="F") #passed
+```
+
+#### Appendix C.12.5: Parsimony for Vehicle_retail_price
+
+```{r echo=FALSE}
+#Parsimony
+c(AIC(glm7), BIC(glm7))
+c(AIC(glm9), BIC(glm9)) #both decrease
+```
+
+#### Appendix C.12.6: CV for Vehicle_retail_price
+
+```{r echo=FALSE}
+#CV for glm9
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + vehicle_age +agecat + 
+                      Liab_driving_record_Ind + Marital_status_Ind +
+                      Num_at_fault_claims_past_1_yr_Ind + Vehicle_retail_price,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm9<-mean(res)
+mean_gini_glm9
+```
+
+### Appendix C.13: Vehicle_horsepower Model
+
+```{r echo=FALSE}
+quantile(coll_dataset_claims$Vehicle_horsepower, c(0.8,0.85,0.90,0.95,0.96,0.97,0.98,0.985,0.99,0.995,1)) #cap at 403
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Vehicle_horsepower=ifelse(Vehicle_horsepower>403, 403, Vehicle_horsepower))
+```
+
+#### Appendix C.13.1: One-way Analysis for Vehicle_horsepower
+
+```{r echo=FALSE}
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$Vehicle_horsepower, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 8, 
+           xlab = "Horsepower", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Horsepower") #makes sense
+```
+
+#### Appendix C.13.2: Significance Test for Vehicle_horsepower
+
+```{r echo=FALSE}
+glm10<-glm(severity ~ AY_factor + vehicle_age +agecat + 
+            Liab_driving_record_Ind + Marital_status_Ind +
+            Num_at_fault_claims_past_1_yr_Ind + Vehicle_horsepower,
+          family=Gamma(link="log"), 
+          data = coll_dataset_claims, 
+          weights=Collision_claim_count, 
+          subset=(partition=="Training"), 
+          na.action="na.pass",
+          x = TRUE)
+summary(glm10) #all significant
+```
+
+#### Appendix C.13.3: Time Consistency for Vehicle_horsepower
+
+```{r echo=FALSE}
+#Time consistency
+glm10_TC<-glm(severity ~ AY_factor*Vehicle_horsepower,
+             family=Gamma(link="log"), 
+             data = coll_dataset_claims, 
+             weights=Collision_claim_count, 
+             subset=(partition=="Training"), 
+             na.action="na.pass",
+             x = TRUE)
+plot(predictorEffects(glm10_TC, "AY_factor"), multiline=T) #passed
+```
+
+#### Appendix C.13.4: F-Test for Vehicle_horsepower
+
+```{r echo=FALSE}
+#F-Test
+anova(glm7,glm10,test="F") #passed
+```
+
+#### Appendix C.13.5: Parsimony for Vehicle_horsepower
+
+```{r echo=FALSE}
+#Parsimony
+print("AIC")
+c(AIC(glm7), BIC(glm7))
+print("BIC")
+c(AIC(glm10), BIC(glm10)) #both decrease
+```
+
+#### Appendix C.13.6: CV for Vehicle_horsepower
+
+```{r echo=FALSE}
+#CV for glm10
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + vehicle_age +agecat + 
+                      Liab_driving_record_Ind + Marital_status_Ind +
+                      Num_at_fault_claims_past_1_yr_Ind + Vehicle_horsepower,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm10<-mean(res)
+mean_gini_glm10
+```
+
+### Appendix C.14: Vehicle_wheelbase Model
+
+```{r echo=FALSE}
+quantile(coll_dataset_claims$Vehicle_wheelbase, c(0.8,0.85,0.90,0.95,0.96,0.97,0.98,0.985,0.99,0.995,1)) #no capping
+
+quantile(coll_dataset_claims$Vehicle_wheelbase, c(0.005, 0.01,0.02,0.03,0.04,0.05,0.07,0.1)) #floor at 2373
+
+coll_dataset_claims = coll_dataset_claims %>%
+  mutate(Vehicle_wheelbase=ifelse(Vehicle_wheelbase<2373, 2373, Vehicle_wheelbase))
+```
+
+#### Appendix C.14.1: One-way Analysis for Vehicle_wheelbase
+
+```{r echo=FALSE}
+dataToPlot = coll_dataset_claims %>%
+  filter(partition == "Training")
+
+binnedPlot(response = dataToPlot$severity,
+           x = dataToPlot$Vehicle_wheelbase, 
+           weight = dataToPlot$Collision_incurred_amount,
+           type= "equal", 
+           g = 8, 
+           xlab = "Horsepower", 
+           ylab = "Claim Severity", 
+           title = "Observed and fitted claim Severity by Horsepower") #makes sense
+```
+
+#### Appendix C.14.2: Significance Test for Vehicle_wheelbase
+
+```{r echo=FALSE}
+#add to model 
+glm11<-glm(severity ~ AY_factor + vehicle_age +agecat + 
+             Liab_driving_record_Ind + Marital_status_Ind +
+             Num_at_fault_claims_past_1_yr_Ind + Vehicle_wheelbase,
+           family=Gamma(link="log"), 
+           data = coll_dataset_claims, 
+           weights=Collision_claim_count, 
+           subset=(partition=="Training"), 
+           na.action="na.pass",
+           x = TRUE)
+summary(glm11) #all significant
+```
+
+#### Appendix C.14.3: Time Consistency for Vehicle_wheelbase
+
+```{r echo=FALSE}
+#Time consistency
+glm11_TC<-glm(severity ~ AY_factor*Vehicle_wheelbase,
+              family=Gamma(link="log"), 
+              data = coll_dataset_claims, 
+              weights=Collision_claim_count, 
+              subset=(partition=="Training"), 
+              na.action="na.pass",
+              x = TRUE)
+plot(predictorEffects(glm11_TC, "AY_factor"), multiline=T) #passed, but converging
+```
+
+#### Appendix C.14.4: F-Test for Vehicle_wheelbase
+
+```{r echo=FALSE}
+#F-Test
+anova(glm7,glm11,test="F") #passed
+```
+
+#### Appendix C.14.5: Parsimony for Vehicle_wheelbase
+
+```{r echo=FALSE}
+#Parsimony
+print("AIC")
+c(AIC(glm7), BIC(glm7))
+print("BIC")
+c(AIC(glm11), BIC(glm11)) #both decrease slightly
+```
+
+#### Appendix C.14.6: CV for Vehicle_wheelbase
+
+```{r echo=FALSE}
+#CV for glm11
+train<-filter(coll_dataset_claims, partition=="Training")
+setDT(train)
+# Cross-validated random folds (good to set a seed prior to creating folds for reproducibility)
+set.seed(123)
+foldID = sample(1:5, size = nrow(train), replace = T)
+
+# Create storage for the Gini coefficients, CV models and CV predictions
+res = rep(0, 5)
+models = vector(mode = "list", 5)
+predictions = vector(mode = "list", 5)
+
+# Loop over folds, fit a model, predict and compute Gini 
+for (i in 1:5){
+  models[[i]] = glm(severity ~ AY_factor + vehicle_age +agecat + 
+                      Liab_driving_record_Ind + Marital_status_Ind +
+                      Num_at_fault_claims_past_1_yr_Ind + Vehicle_wheelbase,
+                    family=Gamma(link="log"), 
+                    data = train[foldID != i,], 
+                    weights=Collision_claim_count,
+                    na.action="na.pass",
+                    x = TRUE)
+  predictions[[i]] = predict(models[[i]], newdata = train[foldID == i,], type = "response")
+  res[i] = NormalizedWeightedGini(train[foldID == i, severity], 
+                                  weights = train[foldID == i, Collision_claim_count], 
+                                  submission = predictions[[i]])
+}
+
+mean_gini_glm11<-mean(res)
+mean_gini_glm11
+```
+
+### Appendix C.15: Results of CV on Training Dataset
+
+```{r echo=FALSE}
+#CV Gini DF
+models<-c(1,2,3,4,5,6,7,9,10,11)
+mean_ginis<-c(mean_gini_base, mean_gini_glm2, mean_gini_glm3, mean_gini_glm4, mean_gini_glm5,
+              mean_gini_glm6, mean_gini_glm7, mean_gini_glm9, mean_gini_glm10, mean_gini_glm11)
+cbind(models,mean_ginis)
+
+#According to the train data, model 9 is the best!
+```
+
+### Appendix C.16: Model Assumptions for Vehicle_retail_price Model (9)
+
+```{r echo=FALSE}
+##Testing for glm9
+#deviance residuals
+dev_resid_glm9 <- resid(glm9, type="deviance")
+plot(glm9$fitted.values, dev_resid_glm9, xlab="Deviance Residuals",
+     ylab="Fitted Values", main="Deviance Residuals for Retail Price Model")
+
+hist(dev_resid_glm9, prob=TRUE, breaks=30, main="Retail Price Model", xlab="Deviance
+     Residuals")
+curve(dnorm(x, mean=mean(dev_resid_glm9), sd=sd(dev_resid_glm9)), add=TRUE)
+
+qqnorm(dev_resid_glm9, main="Retail Price Model Q-Q Plot")
+qqline(dev_resid_glm9)
+```
+
+### Appendix C.17: Holdout Testing
+
+#### Appendix C.17.1: Parsimony Tests for Full Model vs Reduced Model
+
+```{r echo=FALSE}
+##Holdout Testing comparing glm9 and glm10
+holdout<-filter(coll_dataset, partition=="Holdout")
+holdout<-coll_dataset[coll_dataset$Collision_incurred_amount!=0,]
+glm_9_reduced<- glm(severity ~ AY_factor + vehicle_age +agecat + 
+                      Marital_status_Ind +
+                      Num_at_fault_claims_past_1_yr_Ind + Vehicle_retail_price,
+                    family=Gamma(link="log"), 
+                    data = holdout)
+glm_9_hold<-glm(severity ~ AY_factor + vehicle_age +agecat + 
+                  Liab_driving_record_Ind + Marital_status_Ind +
+                  Num_at_fault_claims_past_1_yr_Ind + Vehicle_retail_price,
+                family=Gamma(link="log"), 
+                data = holdout)
+print("AIC")
+c(AIC(glm_9_hold), BIC(glm_9_hold))
+print("BIC")
+c(AIC(glm_9_reduced),BIC(glm_9_reduced)) #9_hold is lower for both. 
+```
+
+#### Appendix C.17.2: Simple Quantile Plots for Full Model and Reduced Model
+
+```{r echo=FALSE}
+train<- coll_dataset_claims
+
+adj_factor <- (mean(holdout$Collision_incurred_amount)/mean(holdout$Collision_claim_count))/
+  (mean(train$Collision_incurred_amount)/mean(train$Collision_claim_count))
+adj_factor 
+
+holdout$predictionsglm9_hold <- predict(glm_9_hold, holdout,  type="response",na.action="na.pass")*adj_factor 
+holdout$predictionsglm9_reduced <- predict(glm_9_reduced, holdout,
+                                               type="response",na.action="na.pass")*adj_factor
+
+#Lift for Full Model
+holdout$predictionsglm9_hold_decile = pmin(floor(rank(holdout$predictionsglm9_hold)/nrow(holdout)*10)+1, 10)
+dataToPlot1 = data.frame("Observed Severity" = holdout$severity, "Predicted Severity - Full Model" = holdout
+                        $predictionsglm9_hold)
+binnedPlot(dataToPlot1, x = factor(holdout$predictionsglm9_hold_decile), weight = holdout$Collision_claim_count, xlab = 
+             "Predicted Decile - Full Model", ylab = "Claim Severity",
+           title = "Observed and Predicted Claim Severity - Full Model by Decile")
+
+#Lift for Reduced Model
+holdout$predictionsglm9_reduced_decile = pmin(floor(rank(holdout$predictionsglm9_reduced)/nrow(holdout)*10)+1, 10)
+dataToPlot2 = data.frame("Observed Severity" = holdout$severity, "Predicted Severity - Reduced Model" = holdout
+                        $predictionsglm9_reduced)
+binnedPlot(dataToPlot2, x = factor(holdout$predictionsglm9_reduced_decile), weight = holdout$Collision_claim_count, xlab = 
+             "Predicted Decile - Reduced Model", ylab = "Claim Severity", 
+           title = "Observed and Predicted Claim Severity - Reduced by Decile")
+```
+
+#### Appendix C.17.3: Double Lift Chart
+
+```{r echo=FALSE}
+#Double Lift for glm9 vs glm10
+holdout$sort_ratio <- holdout$predictionsglm9_hold/holdout$predictionsglm9_reduced
+holdout$sort_ratio_decile <- pmin(floor(rank(holdout$sort_ratio)/nrow(holdout)*12)+1, 12)
+dataToPlot = data.frame("Observed Severity" = holdout$severity, "Predicted Severity - Full Model" = holdout
+                        $predictionsglm9_hold, "Predicted Severity - Reduced Model" = holdout$predictionsglm9_reduced)
+#dev.new()
+binnedPlot(dataToPlot, x = factor(holdout$sort_ratio_decile), weight = holdout$Collision_claim_count, xlab = "Sort Ratio 
+(Retail Price/Horsepower) Decile", ylab = "Claim Severity", title = "Double Lift Chart - Full Model vs Reduced")
+
+#We go with the Full Model!!
+```
+
+#### Appendix C.17.4: Holdout Gini Coefficients
+
+```{r echo=FALSE}
+#Gini Coefficients 
+holdout_gini_glm9_hold<-NormalizedWeightedGini(holdout$Collision_incurred_amount, holdout$Collision_claim_count, 
+                       holdout$predictionsglm9_hold*holdout$Collision_claim_count) 
+
+holdout_gini_glm9_reduced<-NormalizedWeightedGini(holdout$Collision_incurred_amount, holdout$Collision_claim_count, 
+                                          holdout$predictionsglm9_reduced*holdout$Collision_claim_count)
+
+holdout_gini_glm9_hold
+holdout_gini_glm9_reduced
+```
+
+### Appendix C.18: Combining Sev Predictions with Freq Predictions
+
+```{r echo=FALSE}
+#Loading in frequency data 
+freq_data<-read.csv("~/Documents/Winter 2023/ACTSC 489/freq_holdout_2.csv")
+
+freq_model<-glm(Collision_claim_count ~ Accident_year + Age_imputed + Age_imputed_squared + 
+                                           Vehicle_age_cap_30 +
+                                           Num_minor_convictions_cap_5+
+                                           New_business_imputed +
+                                           Has_partner,
+                                         family = quasipoisson(link = "log"),
+                                         data = freq_data,
+                                         offset = log(Collision_earned_count),
+                                         x = TRUE)
+
+#Adding predictions to dataset
+adj_freq=0.9728966
+freq_data$freq_predictions<-predict(freq_model, freq_data,
+                                             type="response",na.action="na.pass")/freq_data$Collision_earned_count
+
+
+freq_data$freq_predictions<-freq_data$freq_predictions*adj_freq
+
+holdout_full<-filter(coll_dataset, partition=="Holdout")
+
+adj_sev <- (mean(holdout_full$Collision_incurred_amount)/mean(holdout_full$Collision_claim_count))/
+  (mean(train$Collision_incurred_amount)/mean(train$Collision_claim_count))
+
+holdout_full$sev_predictions<-predict(glm9, holdout_full, type='response')*adj_factor
+
+holdout_merge<-merge(x = freq_data, y = holdout_full, by = "id", all.x = FALSE, all.y = TRUE)
+
+#making frequency X severity
+holdout_merge$freq_x_sev=holdout_merge$freq_predictions*holdout_merge$sev_predictions
+holdout_merge$freq_x_sev_predictions = holdout_merge$freq_predictions*holdout_merge$sev_predictions
+
+#making loss cost
+holdout_merge$loss_cost=holdout_merge$Collision_incurred_amount.x/holdout_merge$Collision_earned_count.x
+
+NormalizedWeightedGini(holdout_merge$loss_cost, weights= holdout_merge$Collision_earned_count.x, submission = holdout_merge$freq_x_sev)
+
+NormalizedWeightedGini(freq_data$Collision_claim_count/freq_data$Collision_earned_count,
+                       weights= freq_data$Collision_earned_count.x, submission = freq_data$freq_predictions)
+```
